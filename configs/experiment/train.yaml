@@ -1,0 +1,95 @@
+# @package _global_
+
+defaults:
+  - /lora@lora.struct: struct
+  - override /lora/encoder@lora.struct.encoder: midas
+  - override /model: sd15
+  - override /data: local_depth
+  - _self_
+
+# =============================================================================
+# MODEL SELECTION & HARDWARE
+# =============================================================================
+# MULTI-GPU LAUNCH (4× A100 / H100 / 90 GB class GPU):
+#   accelerate launch --num_processes=4 train_depth.py experiment=train_depth_cluster
+#
+gradient_checkpointing: false         # Not needed — each GPU has 90 GB, activations fit comfortably
+gradient_accumulation_steps: 1        # Not needed — 4 GPUs × batch 16 = 64 effective batch per step
+size: 512
+
+# =============================================================================
+# 1. GENERAL TRAINING PARAMETERS
+# =============================================================================
+learning_rate: 2.0e-4                 # Scaled from 1e-4 by √(64/16)=2 for 4× larger effective batch
+lr_warmup_steps: 150
+lr_scheduler: cosine
+
+epochs: 5
+val_steps: 200
+ckpt_steps: 500
+
+# =============================================================================
+# 2. DATA TRACKING LAYER (Direct path — JSON manifest)
+# =============================================================================
+data:
+  batch_size: 16                      # 16 per GPU × 4 GPUs = 64 Effective Batch Size
+  # batch_size: 32                    # 32 per GPU × 4 GPUs = 128 Effective Batch Size (max throughput)
+  workers: 8
+  val_workers: 4
+
+  # Absolute sources of truth containing literal system paths
+  json_file:     data/train.json
+  val_json_file: data/test.json
+
+# =============================================================================
+# 3. GLOBAL FALLBACK PROMPT
+# =============================================================================
+use_empty_prompt_eval: false
+prompt: null
+
+# =============================================================================
+# 4. OPERATIONAL SETTINGS
+# =============================================================================
+n_samples: 1
+seed: 42
+val_batches: 8
+save_grid: true
+
+# =============================================================================
+# 5. HARDWARE PRECISION CONFIGURATIONS
+# =============================================================================
+bf16: true
+ignore_check: true
+log_cond: true
+tag: depth_cluster
+
+# =============================================================================
+# 6. ABSOLUTE OFFLINE PROPERTY OVERRIDES
+# =============================================================================
+model:
+  _target_: src.model.SD15
+  pipeline_type: diffusers.StableDiffusionPipeline
+  model_name: "runwayml/stable-diffusion-v1-5"
+  local_files_only: false
+  guidance_scale: 7.5
+
+# =============================================================================
+# 7. LORA ARCHITECTURE SETTINGS
+# =============================================================================
+lora:
+  struct:
+    optimize: true
+    cfg: false
+    ckpt_path: null                   # Set to resume, e.g. "outputs/.../checkpoint-2000"
+    encoder:
+      _target_: src.annotators.midas.DepthEstimator
+      model: "Intel/dpt-hybrid-midas"
+      size: ${size}
+      local_files_only: false
+    config:
+      adaption_mode: only_res_conv
+      rank: 128
+      c_dim: 128
+      lora_scale: 1
+
+local_files_only: false

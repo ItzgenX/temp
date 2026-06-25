@@ -1,0 +1,149 @@
+# @package _global_
+
+defaults:
+  - /lora@lora.struct: struct
+  - override /lora/encoder@lora.struct.encoder: midas
+  - override /model: sd15
+  - override /data: local_depth
+  - _self_
+
+# =============================================================================
+# MODEL SELECTION & HARDWARE
+# =============================================================================
+gradient_checkpointing: true          # Required on 12 GB — saves ~1.5 GB VRAM at ~20% compute cost
+gradient_accumulation_steps: 4        # 4 bsz × 4 grad acc = 16 effective batch size (max safe for 12 GB)
+size: 512                             # Native canvas resolution matching SD1.5 dimensions
+
+# =============================================================================
+# 1. GENERAL TRAINING PARAMETERS
+# =============================================================================
+#
+# ── DATASET MATH (60K train / 4K val / 4K test) ──────────────────────────────
+#
+#   effective batch size  = batch_size(4) × gradient_accumulation_steps(4) = 16
+#   optimizer steps/epoch = 60,000 / 16                                    = 3,750
+#   total optimizer steps = 3,750 × epochs(5)                              = 18,750
+#
+# ── LEARNING RATE SCHEDULE ───────────────────────────────────────────────────
+#
+#   lr_warmup_steps: 500
+#     Step   0 → LR = 0.0
+#     Step 500 → LR = 1e-4   (fully ramped up)
+#     500 / 18,750 = 2.7% warmup — safe ramp to avoid early gradient spikes
+#
+#   lr_scheduler: cosine
+#     After step 500, LR decays smoothly from 1e-4 → ~0 by end of training
+#
+# ── CHECKPOINT & GRID SAVE SCHEDULE ─────────────────────────────────────────
+#
+#   val_steps: 1000
+#     → 4-panel grid + checkpoint saved at step 1000, 2000, 3000 … 18000
+#     → 1000 / 3,750 = 26% of one epoch  (~4 saves per epoch)
+#     → step checkpoints  : 18   (checkpoint-1000, checkpoint-2000 …)
+#     → epoch checkpoints :  5   (checkpoint-epoch-1 … checkpoint-epoch-5)
+#     → best model        :  1   (best_model/ — updated when val loss improves)
+#     → TOTAL saved       : ~24 checkpoints
+#
+#   To save MORE often → lower val_steps:
+#     val_steps: 500   → 8 saves/epoch  → ~45 step checkpoints total
+#     val_steps: 750   → 5 saves/epoch  → ~30 step checkpoints total
+#   To save LESS often → raise val_steps:
+#     val_steps: 2000  → 2 saves/epoch  →  ~9 step checkpoints total
+#     val_steps: 3750  → 1 save/epoch   →   5 step checkpoints total (same as epoch)
+#
+# ── OUTPUT FOLDER LAYOUT ─────────────────────────────────────────────────────
+#
+#   outputs/train/depth_12gb/runs/YYYY-MM-DD/HH-MM-SS/
+#     image_grid/
+#       checkpoint-1000.jpg        ← 4-panel grid at step 1000
+#       checkpoint-2000.jpg
+#       checkpoint-epoch-1.jpg     ← 4-panel grid at end of epoch 1
+#       ...
+#     checkpoint-1000/             ← model weights at step 1000
+#     checkpoint-epoch-1/          ← model weights at end of epoch 1
+#     best_model/                  ← weights of the lowest val-loss epoch
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+learning_rate: 1.0e-4                 # Standard LoRA fine-tuning rate
+lr_warmup_steps: 500                  # 500 / 18,750 = 2.7% warmup (see math above)
+lr_scheduler: cosine                  # decays 1e-4 → ~0 after warmup
+
+epochs: 1                             # 5 × 3,750 = 18,750 total optimizer steps
+val_steps: 100                       # 4-panel grid + checkpoint every 1000 steps (~4× per epoch)
+ckpt_steps: 100
+
+# =============================================================================
+# 2. DATA TRACKING LAYER (Direct path — JSON manifest)
+# =============================================================================
+#
+#   JSON keys read by DepthJsonDataset (src/data/local.py):
+#     "raw_image_path" → source RGB image
+#     "depth_path"     → pre-computed depth PNG (run precompute_depth.py first)
+#     "prompt"         → text caption for this image
+#   If you rename any key in the JSON, update DepthJsonDataset.__getitem__ and
+#   the entries loop in inference_depth.py (~line 175).
+#
+data:
+  batch_size: 4                       # 4 × grad_accum(4) = 16 effective batch (max for 12 GB)
+  # batch_size: 8                     # only if VRAM allows with gradient_checkpointing=true
+  workers: 4
+  val_workers: 2
+
+  json_file:     data/train.json      # 60K training samples
+  val_json_file: data/test.json       # 4K test samples used for val grid + best-model tracking
+
+# =============================================================================
+# 3. GLOBAL FALLBACK PROMPT
+# =============================================================================
+# prompt: null      → each image uses its own "prompt" field from the JSON
+# prompt: "a photo" → overrides ALL per-image prompts with this single string
+use_empty_prompt_eval: false
+prompt: null
+
+# =============================================================================
+# 4. OPERATIONAL SETTINGS
+# =============================================================================
+n_samples: 1
+seed: 42
+val_batches: 8
+save_grid: true
+
+# =============================================================================
+# 5. HARDWARE PRECISION CONFIGURATIONS
+# =============================================================================
+bf16: true                            # 16-bit brain float — halves VRAM vs fp32
+ignore_check: true
+log_cond: true
+tag: depth_12gb
+
+# =============================================================================
+# 6. ABSOLUTE OFFLINE PROPERTY OVERRIDES
+# =============================================================================
+model:
+  _target_: src.model.SD15
+  pipeline_type: diffusers.StableDiffusionPipeline
+  model_name: "runwayml/stable-diffusion-v1-5"
+  local_files_only: false
+  guidance_scale: 7.5
+
+# =============================================================================
+# 7. LORA ARCHITECTURE SETTINGS
+# =============================================================================
+lora:
+  struct:
+    optimize: true
+    cfg: false
+    ckpt_path: null                   # Set to resume, e.g. "outputs/.../checkpoint-3000"
+    encoder:
+      _target_: src.annotators.midas.DepthEstimator
+      model: "Intel/dpt-hybrid-midas"
+      size: ${size}
+      local_files_only: false
+    config:
+      adaption_mode: only_res_conv
+      rank: 128
+      c_dim: 128
+      lora_scale: 1
+
+local_files_only: false

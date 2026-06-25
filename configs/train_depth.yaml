@@ -1,0 +1,41 @@
+defaults:
+  - data: ???
+  - model: ???
+  - _self_
+  - experiment: null
+
+size: ???
+
+gradient_checkpointing: false
+gradient_accumulation_steps: 1
+
+learning_rate: 1e-4
+lr_warmup_steps: 0
+lr_scheduler: constant
+
+epochs: 10
+val_steps: 1000
+ckpt_steps: 1000
+
+prompt: null
+use_empty_prompt_eval: false
+
+n_samples: 1
+seed: 42
+val_batches: 4
+save_grid: true
+
+bf16: false
+ignore_check: false
+log_cond: false
+tag: ''
+local_files_only: false
+
+hydra:
+  run:
+    dir: outputs/train/${tag}/runs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/train/${tag}/multiruns/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: true

@@ -1,0 +1,19 @@
+_target_: src.data.local.DepthJsonDataModule
+
+json_file:     ???
+val_json_file: null
+size: ${size}
+batch_size: 4
+val_batch_size: 1
+workers: 4
+val_workers: 2
+
+transform:
+  - _target_: torchvision.transforms.Resize
+    size:
+      - ${size}
+      - ${size}
+  - _target_: torchvision.transforms.ToTensor
+  - _target_: torchvision.transforms.Normalize
+    mean: [0.5, 0.5, 0.5]
+    std:  [0.5, 0.5, 0.5]
